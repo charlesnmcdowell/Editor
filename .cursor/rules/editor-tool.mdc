@@ -4,17 +4,34 @@ alwaysApply: true
 # Style Editor Project Rules
 
 ## Architecture
-This is a Python CLI tool that learns an author's editing style from markdown diffs.
-Stage 1 only - learning pipeline. No apply edits functionality.
+This is a Python CLI tool that edits fiction chapters using Claude, learning the author's style over time.
+Stage 2 - file-based editing workflow. No paragraph-level diffing.
+
+### Working Files (repo root)
+- original.md - raw chapter text (input)
+- edited.md - human feedback/comments inline (optional input)
+- aiedited.md - AI reasoning log (output, auto-generated)
+- final.md - clean edited chapter (output)
+- authorpreferences.md - persistent style preferences, plain English (grows over time)
 
 ### Data Flow
-1. differ.py - paragraph-level diffing via difflib.SequenceMatcher
-2. analyzer.py - sends diffs to Claude API for categorization (JSON-only responses)
-3. profile.py - merges patterns into output/style_profile.json with occurrence counting
-4. cli.py - Click CLI with learn, profile, reset commands
+1. Read original.md (required) and edited.md (optional feedback)
+2. Detect mode: Human Feedback (edited.md has content) or AI-Only (empty)
+3. Call Claude with original + feedback + preferences -> get reasoning + final chapter
+4. In Human Feedback mode: second API call extracts new preferences from feedback
+5. Archive working files to history/{timestamp}_{mode}/ and wipe
+
+### Modules
+- prompts.py - all Claude system prompts
+- analyzer.py - Claude API calls (edit_with_feedback, edit_ai_only, update_preferences)
+- profile.py - file I/O for all working files
+- archive.py - timestamped archiving and file wiping
+- cli.py - Click CLI: edit, preferences, history, reset
 
 ### Conventions
 - Model: claude-sonnet-4-20250514 via anthropic SDK
 - API key from .env via python-dotenv
-- All Claude responses must be raw JSON no markdown fences
-- Profile accumulates across chapters; matching rules increment occurrence count
+- Claude outputs split on ===FINAL=== delimiter (reasoning above, chapter below)
+- authorpreferences.md is plain English, not JSON - human-readable and hand-editable
+- Archive folders: history/{YYYY-MM-DD_HHMMSS}_{human|ai}/
+- Working files are wiped after archive (except final.md stays for reference)

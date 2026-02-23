@@ -1,151 +1,96 @@
-"""Tests for the profile merge / persistence logic."""
+"""Tests for the Stage 2 profile module — file I/O for working files."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from editor.profile import (
-    _rules_match,
-    load_profile,
-    merge_patterns,
-    reset_profile,
-    save_profile,
-)
+from editor import profile
 
 
 @pytest.fixture
-def tmp_profile(tmp_path: Path) -> Path:
-    return tmp_path / "style_profile.json"
+def tmp_files(tmp_path: Path):
+    """Patch all file paths to use a temp directory."""
+    paths = {
+        "ORIGINAL_PATH": tmp_path / "original.md",
+        "EDITED_PATH": tmp_path / "edited.md",
+        "AIEDITED_PATH": tmp_path / "aiedited.md",
+        "FINAL_PATH": tmp_path / "final.md",
+        "PREFERENCES_PATH": tmp_path / "authorpreferences.md",
+        "HISTORY_DIR": tmp_path / "history",
+        "ROOT": tmp_path,
+    }
+    with patch.multiple("editor.profile", **paths):
+        yield paths
 
 
-class TestRulesMatch:
-    def test_identical_rules_match(self):
-        assert _rules_match("Remove filter words", "Remove filter words")
+class TestReadWriteFile:
+    def test_read_missing_returns_empty(self, tmp_path: Path):
+        assert profile.read_file(tmp_path / "nope.md") == ""
 
-    def test_similar_rules_match(self):
-        assert _rules_match(
-            "Replace filter words with direct sensory experience",
-            "Remove filter words and use direct sensory detail",
-        )
+    def test_read_empty_file_returns_empty(self, tmp_path: Path):
+        f = tmp_path / "empty.md"
+        f.write_text("", encoding="utf-8")
+        assert profile.read_file(f) == ""
 
-    def test_different_rules_dont_match(self):
-        assert not _rules_match(
-            "Tighten dialogue tags",
-            "Add sensory detail to environment descriptions",
-        )
+    def test_read_whitespace_only_returns_empty(self, tmp_path: Path):
+        f = tmp_path / "ws.md"
+        f.write_text("   \n  \n  ", encoding="utf-8")
+        assert profile.read_file(f) == ""
 
-    def test_empty_rules_dont_match(self):
-        assert not _rules_match("", "")
-        assert not _rules_match("some rule", "")
+    def test_write_and_read_roundtrip(self, tmp_path: Path):
+        f = tmp_path / "test.md"
+        profile.write_file(f, "Hello world")
+        assert profile.read_file(f) == "Hello world"
 
+    def test_write_creates_parent_dirs(self, tmp_path: Path):
+        f = tmp_path / "a" / "b" / "test.md"
+        profile.write_file(f, "deep")
+        assert f.exists()
 
-class TestLoadSaveProfile:
-    def test_load_nonexistent_returns_blank(self, tmp_profile: Path):
-        profile = load_profile(tmp_profile)
-        assert profile == {"rules": [], "chapters_analyzed": 0}
+    def test_wipe_clears_content(self, tmp_path: Path):
+        f = tmp_path / "test.md"
+        f.write_text("content", encoding="utf-8")
+        profile.wipe_file(f)
+        assert f.read_text(encoding="utf-8") == ""
 
-    def test_save_and_load_roundtrip(self, tmp_profile: Path):
-        data = {
-            "rules": [
-                {
-                    "category": "prose_tightening",
-                    "rule": "Cut filter words",
-                    "occurrences": 3,
-                    "confidence": 0.85,
-                    "examples": [],
-                }
-            ],
-            "chapters_analyzed": 2,
-        }
-        save_profile(data, tmp_profile)
-        loaded = load_profile(tmp_profile)
-        assert loaded == data
-
-    def test_save_creates_parent_dirs(self, tmp_path: Path):
-        deep = tmp_path / "a" / "b" / "profile.json"
-        save_profile({"rules": [], "chapters_analyzed": 0}, deep)
-        assert deep.exists()
+    def test_wipe_missing_file_no_error(self, tmp_path: Path):
+        profile.wipe_file(tmp_path / "nope.md")  # should not raise
 
 
-class TestMergePatterns:
-    def _make_analysis(self, category="prose_tightening", rule="Cut filter words"):
-        return [
-            {
-                "paragraph_index": 0,
-                "patterns": [
-                    {
-                        "category": category,
-                        "rule": rule,
-                        "confidence": 0.9,
-                        "example_before": "He felt tired.",
-                        "example_after": "Tired didn't cover it.",
-                    }
-                ],
-            }
-        ]
+class TestLoadHelpers:
+    def test_load_original(self, tmp_files):
+        tmp_files["ORIGINAL_PATH"].write_text("chapter text", encoding="utf-8")
+        assert profile.load_original() == "chapter text"
 
-    def test_adds_new_rule(self):
-        profile = {"rules": [], "chapters_analyzed": 0}
-        merge_patterns(profile, self._make_analysis())
-        assert len(profile["rules"]) == 1
-        assert profile["rules"][0]["occurrences"] == 1
-        assert profile["chapters_analyzed"] == 1
+    def test_load_feedback_empty(self, tmp_files):
+        assert profile.load_feedback() == ""
 
-    def test_increments_matching_rule(self):
-        profile = {
-            "rules": [
-                {
-                    "category": "prose_tightening",
-                    "rule": "Cut filter words",
-                    "occurrences": 2,
-                    "confidence": 0.8,
-                    "examples": [],
-                }
-            ],
-            "chapters_analyzed": 1,
-        }
-        merge_patterns(
-            profile,
-            self._make_analysis(rule="Remove filter words from prose"),
-        )
-        assert profile["rules"][0]["occurrences"] == 3
-        assert len(profile["rules"]) == 1  # no duplicate added
-        assert profile["chapters_analyzed"] == 2
-
-    def test_different_category_creates_new(self):
-        profile = {
-            "rules": [
-                {
-                    "category": "prose_tightening",
-                    "rule": "Cut filter words",
-                    "occurrences": 1,
-                    "confidence": 0.8,
-                    "examples": [],
-                }
-            ],
-            "chapters_analyzed": 0,
-        }
-        merge_patterns(
-            profile,
-            self._make_analysis(category="dialogue_adjustment", rule="Cut filter words"),
-        )
-        assert len(profile["rules"]) == 2
-
-    def test_empty_analysis_still_increments_chapter(self):
-        profile = {"rules": [], "chapters_analyzed": 5}
-        merge_patterns(profile, [])
-        assert profile["chapters_analyzed"] == 6
+    def test_load_preferences_missing(self, tmp_files):
+        assert profile.load_preferences() == ""
 
 
-class TestResetProfile:
-    def test_reset_deletes_file(self, tmp_profile: Path):
-        save_profile({"rules": [], "chapters_analyzed": 0}, tmp_profile)
-        assert tmp_profile.exists()
-        reset_profile(tmp_profile)
-        assert not tmp_profile.exists()
+class TestSaveHelpers:
+    def test_save_reasoning(self, tmp_files):
+        profile.save_reasoning("reasoning content")
+        assert tmp_files["AIEDITED_PATH"].read_text(encoding="utf-8") == "reasoning content"
 
-    def test_reset_nonexistent_no_error(self, tmp_profile: Path):
-        reset_profile(tmp_profile)  # should not raise
+    def test_save_final(self, tmp_files):
+        profile.save_final("final chapter")
+        assert tmp_files["FINAL_PATH"].read_text(encoding="utf-8") == "final chapter"
+
+    def test_save_preferences(self, tmp_files):
+        profile.save_preferences("prefs text")
+        assert tmp_files["PREFERENCES_PATH"].read_text(encoding="utf-8") == "prefs text"
+
+
+class TestResetPreferences:
+    def test_reset_deletes_file(self, tmp_files):
+        tmp_files["PREFERENCES_PATH"].write_text("prefs", encoding="utf-8")
+        assert profile.reset_preferences() is True
+        assert not tmp_files["PREFERENCES_PATH"].exists()
+
+    def test_reset_missing_returns_false(self, tmp_files):
+        assert profile.reset_preferences() is False

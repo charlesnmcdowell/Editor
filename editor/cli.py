@@ -1,90 +1,148 @@
-"""Click CLI — learn, profile, reset commands."""
+"""Click CLI — edit, preferences, history, reset commands."""
 
 from __future__ import annotations
 
-import json
 import sys
 
 import click
 
-from editor.analyzer import analyze_edits
-from editor.differ import diff_files
+from editor.analyzer import edit_ai_only, edit_with_feedback, update_preferences
+from editor.archive import archive_ai_only, archive_human_feedback, list_history
 from editor.profile import (
-    PROFILE_PATH,
-    load_profile,
-    merge_patterns,
-    reset_profile,
-    save_profile,
+    load_feedback,
+    load_original,
+    load_preferences,
+    reset_preferences,
+    save_final,
+    save_preferences,
+    save_reasoning,
 )
 
 
 @click.group()
 def cli():
-    """Style Editor — learn your editing patterns from markdown diffs."""
+    """Style Editor — file-based editing workflow powered by Claude."""
 
 
 @cli.command()
-@click.argument("original", type=click.Path(exists=True))
-@click.argument("edited", type=click.Path(exists=True))
-def learn(original: str, edited: str):
-    """Run the full learning pipeline on ORIGINAL vs EDITED markdown files."""
-    click.echo(f"Diffing: {original} → {edited}")
+def edit():
+    """Run the full editing workflow.
 
-    edits = diff_files(original, edited)
-    if not edits:
-        click.echo("No differences found between the files.")
-        return
-
-    click.echo(f"Found {len(edits)} edit(s). Sending to Claude for analysis...")
-
-    try:
-        analysis = analyze_edits(edits)
-    except RuntimeError as exc:
-        click.echo(f"Error: {exc}", err=True)
+    Reads original.md and edited.md, detects mode (human feedback vs AI-only),
+    calls Claude, writes aiedited.md and final.md, updates preferences if
+    applicable, and archives everything.
+    """
+    # 1. Read original.md
+    original = load_original()
+    if not original:
+        click.echo("Error: original.md is empty. Add chapter content first.", err=True)
         sys.exit(1)
 
-    pattern_count = sum(len(item.get("patterns", [])) for item in analysis)
-    click.echo(f"Claude identified {pattern_count} pattern(s).")
+    click.echo(f"Read original.md ({len(original)} chars)")
 
-    profile = load_profile()
-    merge_patterns(profile, analysis)
-    save_profile(profile)
+    # 2. Read edited.md to detect mode
+    feedback = load_feedback()
+    preferences = load_preferences()
 
-    click.echo(
-        f"Profile updated — {len(profile['rules'])} rule(s) across "
-        f"{profile['chapters_analyzed']} chapter(s)."
-    )
-    click.echo(f"Saved to {PROFILE_PATH}")
+    if preferences:
+        click.echo(f"Loaded authorpreferences.md ({len(preferences)} chars)")
+    else:
+        click.echo("No authorpreferences.md yet (first run or reset)")
+
+    # 3. Dispatch based on mode
+    if feedback:
+        click.echo("\n--- HUMAN FEEDBACK MODE ---")
+        click.echo(f"Feedback found in edited.md ({len(feedback)} chars)")
+        click.echo("Sending to Claude for editing...")
+
+        try:
+            reasoning, final = edit_with_feedback(original, feedback, preferences)
+        except RuntimeError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
+
+        save_reasoning(reasoning)
+        save_final(final)
+        click.echo(f"Wrote aiedited.md ({len(reasoning)} chars)")
+        click.echo(f"Wrote final.md ({len(final)} chars)")
+
+        # Update preferences from human feedback
+        click.echo("Extracting style preferences from feedback...")
+        try:
+            new_prefs = update_preferences(original, feedback, final, preferences)
+        except RuntimeError as exc:
+            click.echo(f"Warning: preference update failed: {exc}", err=True)
+            new_prefs = None
+
+        if new_prefs:
+            save_preferences(new_prefs)
+            click.echo(f"Updated authorpreferences.md ({len(new_prefs)} chars)")
+
+        # Archive and wipe
+        archive_dir = archive_human_feedback()
+        click.echo(f"\nArchived to {archive_dir}")
+
+    else:
+        click.echo("\n--- AI-ONLY MODE ---")
+        click.echo("No feedback in edited.md. Editing with preferences only.")
+        click.echo("Sending to Claude for editing...")
+
+        try:
+            reasoning, final = edit_ai_only(original, preferences)
+        except RuntimeError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
+
+        save_reasoning(reasoning)
+        save_final(final)
+        click.echo(f"Wrote aiedited.md ({len(reasoning)} chars)")
+        click.echo(f"Wrote final.md ({len(final)} chars)")
+
+        # No preference update in AI-only mode
+        click.echo("(Skipping preference update — no human feedback)")
+
+        # Archive and wipe
+        archive_dir = archive_ai_only()
+        click.echo(f"\nArchived to {archive_dir}")
+
+    click.echo("Done.")
 
 
-@cli.command("profile")
-def show_profile():
-    """Print the current style profile."""
-    profile = load_profile()
-    if not profile.get("rules"):
-        click.echo("No profile yet. Run 'learn' first.")
+@cli.command("preferences")
+def show_preferences():
+    """Print the current authorpreferences.md to the terminal."""
+    prefs = load_preferences()
+    if not prefs:
+        click.echo("No preferences yet. Run an edit with human feedback first.")
+        return
+    click.echo(prefs)
+
+
+@cli.command("history")
+def show_history():
+    """List all archived edit sessions."""
+    sessions = list_history()
+    if not sessions:
+        click.echo("No archived sessions yet.")
         return
 
-    click.echo(f"Chapters analyzed: {profile['chapters_analyzed']}")
-    click.echo(f"Total rules: {len(profile['rules'])}\n")
-
-    # Sort by occurrences descending
-    for rule in sorted(profile["rules"], key=lambda r: r.get("occurrences", 0), reverse=True):
-        click.echo(f"  [{rule['category']}] {rule['rule']}")
-        click.echo(f"    occurrences: {rule['occurrences']}  confidence: {rule['confidence']}")
-        examples = rule.get("examples", [])
-        if examples:
-            ex = examples[0]
-            click.echo(f'    example: "{ex.get("before", "")}" → "{ex.get("after", "")}"')
+    click.echo(f"{len(sessions)} archived session(s):\n")
+    for s in sessions:
+        mode_label = "Human Feedback" if s["mode"] == "human" else "AI-Only"
+        click.echo(f"  {s['name']}  [{mode_label}]")
+        for f in s["files"]:
+            click.echo(f"    - {f}")
         click.echo()
 
 
 @cli.command()
-@click.confirmation_option(prompt="Delete the current style profile?")
+@click.confirmation_option(prompt="Delete authorpreferences.md and start fresh?")
 def reset():
-    """Delete the current style profile and start fresh."""
-    reset_profile()
-    click.echo("Profile reset.")
+    """Delete authorpreferences.md and start fresh."""
+    if reset_preferences():
+        click.echo("authorpreferences.md deleted.")
+    else:
+        click.echo("No authorpreferences.md found — nothing to reset.")
 
 
 def main():

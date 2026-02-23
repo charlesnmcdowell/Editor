@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.2.0] - 2026-02-23
+
+### Changed — Stage 2: File-Based Editing Workflow
+
+Replaced the Stage 1 diff/analyze/profile pipeline with a simpler, file-based editing workflow. One command (`python -m editor.cli edit`) handles everything.
+
+**New workflow:**
+
+The system reads `original.md` (raw chapter) and `edited.md` (optional human feedback). If feedback exists, it runs in **Human Feedback Mode** — Claude applies the feedback plus any established author preferences to produce the edited chapter. If no feedback, it runs in **AI-Only Mode** — Claude applies only learned preferences conservatively. After editing, files are archived to `history/` with timestamps and working files are wiped for the next chapter.
+
+**New/rebuilt modules:**
+
+- **`editor/prompts.py`** (new) — All Claude system prompts in one place: human feedback editing, AI-only editing, and preference extraction.
+- **`editor/analyzer.py`** (rebuilt) — Claude API caller with three functions: `edit_with_feedback()`, `edit_ai_only()`, `update_preferences()`. Uses `===FINAL===` delimiter to split reasoning from clean chapter output.
+- **`editor/profile.py`** (rebuilt) — Simple file I/O for all working files (`original.md`, `edited.md`, `aiedited.md`, `final.md`, `authorpreferences.md`). No more JSON profile; preferences are plain English in a markdown file.
+- **`editor/archive.py`** (new) — Timestamped archiving. Creates `history/{YYYY-MM-DD_HHMMSS}_{human|ai}/` folders, copies relevant files, then wipes working files. Also provides `list_history()` for the CLI.
+- **`editor/cli.py`** (rebuilt) — Four Click commands:
+  - `edit` — the main workflow (detects mode, calls Claude, writes outputs, updates prefs, archives)
+  - `preferences` — prints current `authorpreferences.md`
+  - `history` — lists archived sessions
+  - `reset --yes` — deletes `authorpreferences.md`
+
+**Removed:**
+
+- **`editor/differ.py`** — Paragraph-level diffing no longer needed; Claude reads files directly.
+- `output/style_profile.json` workflow — replaced by plain-English `authorpreferences.md`.
+
+**Working files (repo root):**
+
+- `original.md` — raw chapter text (user fills this)
+- `edited.md` — human feedback inline comments (optional; may be empty)
+- `aiedited.md` — AI reasoning log (auto-generated)
+- `final.md` — clean edited chapter (auto-generated)
+- `authorpreferences.md` — persistent style memory, plain English, grows over time
+
+**Test suite (42 tests, all passing):**
+
+- `tests/test_analyzer.py` (8 tests) — output splitting, both edit modes, preference extraction, all mocked
+- `tests/test_archive.py` (10 tests) — human/AI archiving, file copying, wiping, history listing
+- `tests/test_cli.py` (9 tests) — all four CLI commands with mocked dependencies
+- `tests/test_profile.py` (15 tests) — file read/write, load/save helpers, wipe, reset
+
+---
+
 ## [0.1.0] - 2026-02-23
 
 ### Added — Stage 1: Learning Pipeline

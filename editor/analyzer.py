@@ -1,104 +1,103 @@
-"""Send edit diffs to Claude API for style-pattern categorization."""
+"""Claude API caller for the editing workflow."""
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import asdict
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
-from editor.differ import Edit
+from editor.prompts import AI_ONLY_SYSTEM, HUMAN_FEEDBACK_SYSTEM, PREFERENCE_EXTRACTION
 
 load_dotenv()
 
 MODEL = "claude-sonnet-4-20250514"
-
-SYSTEM_PROMPT = """\
-You are an expert literary editor analyst. You will receive a list of edits \
-made to a fiction manuscript. Each edit contains the original text, the edited \
-text, paragraph index, and a diff summary.
-
-Your job is to categorize every edit into one or more editing-style patterns. \
-Return ONLY valid JSON — no markdown fences, no commentary.
-
-The JSON must be a list of objects, one per edit, each with these fields:
-- paragraph_index (int): the paragraph index of the edit
-- patterns (list of objects): each pattern has:
-  - category (str): one of prose_tightening, dialogue_adjustment, \
-pacing_changes, tone_shifts, show_vs_tell, internal_monologue, \
-combat_writing, world_building, sensory_detail, metaphor_refinement, \
-voice_consistency, repetition_removal, sentence_structure, other
-  - rule (str): a short, reusable description of the editing rule applied \
-(e.g. "Replace filter words with direct sensory experience")
-  - confidence (float): 0.0 to 1.0
-  - example_before (str): brief excerpt from original
-  - example_after (str): brief excerpt from edited version
-
-Respond with ONLY the JSON array. No preamble. No closing remarks.\
-"""
+DELIMITER = "===FINAL==="
 
 
-def _build_user_prompt(edits: list[Edit]) -> str:
-    """Serialize edits into a prompt for Claude."""
-    items = []
-    for e in edits:
-        items.append(
-            {
-                "paragraph_index": e.paragraph_index,
-                "original_text": e.original_text[:500],
-                "edited_text": e.edited_text[:500],
-                "diff_summary": e.diff_summary[:300],
-            }
-        )
-    return json.dumps(items, indent=2)
-
-
-def analyze_edits(edits: list[Edit]) -> list[dict]:
-    """Send edits to Claude and return categorized patterns.
-
-    Returns a list of dicts, one per edit, each containing
-    ``paragraph_index`` and ``patterns``.
-    """
-    if not edits:
-        return []
-
+def _get_client() -> Anthropic:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY not set. Add it to your .env file."
-        )
+        raise RuntimeError("ANTHROPIC_API_KEY not set. Add it to your .env file.")
+    return Anthropic(api_key=api_key)
 
-    client = Anthropic(api_key=api_key)
 
+def _call_claude(system: str, user_content: str, max_tokens: int = 16384) -> str:
+    """Make a single Claude API call and return the text response."""
+    client = _get_client()
     response = client.messages.create(
         model=MODEL,
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    return response.content[0].text
+
+
+def edit_with_feedback(
+    original: str,
+    feedback: str,
+    preferences: str,
+) -> tuple[str, str]:
+    """Human Feedback Mode: edit a chapter using human feedback + preferences.
+
+    Returns (reasoning, final_chapter).
+    """
+    user_content = (
+        f"ORIGINAL:\n{original}\n\n"
+        f"FEEDBACK:\n{feedback}\n\n"
+        f"PREFERENCES:\n{preferences if preferences else '(No preferences established yet — this is the first session.)'}"
+    )
+    raw = _call_claude(HUMAN_FEEDBACK_SYSTEM, user_content)
+    return _split_output(raw)
+
+
+def edit_ai_only(
+    original: str,
+    preferences: str,
+) -> tuple[str, str]:
+    """AI-Only Mode: edit a chapter using only established preferences.
+
+    Returns (reasoning, final_chapter).
+    """
+    user_content = (
+        f"ORIGINAL:\n{original}\n\n"
+        f"PREFERENCES:\n{preferences if preferences else '(No preferences established yet. Apply general fiction-editing best practices conservatively.)'}"
+    )
+    raw = _call_claude(AI_ONLY_SYSTEM, user_content)
+    return _split_output(raw)
+
+
+def update_preferences(
+    original: str,
+    feedback: str,
+    final: str,
+    current_preferences: str,
+) -> str:
+    """Extract new style preferences from human feedback.
+
+    Returns the updated authorpreferences.md content (plain English).
+    """
+    prompt = PREFERENCE_EXTRACTION.format(
+        original=original,
+        feedback=feedback,
+        final=final,
+        current_preferences=current_preferences if current_preferences else "(No existing preferences — this is the first session.)",
+    )
+    return _call_claude(
+        "You are a style-preference analyst for a fiction author.",
+        prompt,
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
-        messages=[
-            {"role": "user", "content": _build_user_prompt(edits)},
-        ],
     )
 
-    raw = response.content[0].text.strip()
 
-    # Safety: strip markdown fences if Claude adds them despite instructions
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        lines = [l for l in lines if not l.startswith("```")]
-        raw = "\n".join(lines)
+def _split_output(raw: str) -> tuple[str, str]:
+    """Split Claude's response on ===FINAL=== into (reasoning, chapter)."""
+    if DELIMITER not in raw:
+        # Fallback: treat entire response as the final chapter, no reasoning
+        return ("(No reasoning section found in response.)", raw.strip())
 
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Claude returned invalid JSON. Raw response:\n{raw}"
-        ) from exc
-
-    if not isinstance(result, list):
-        raise RuntimeError(
-            f"Expected a JSON array from Claude, got {type(result).__name__}."
-        )
-
-    return result
+    parts = raw.split(DELIMITER, 1)
+    reasoning = parts[0].strip()
+    final = parts[1].strip()
+    return (reasoning, final)
