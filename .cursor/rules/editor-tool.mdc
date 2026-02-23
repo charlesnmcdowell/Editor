@@ -1,0 +1,20 @@
+﻿---
+alwaysApply: true
+---
+# Style Editor Project Rules
+
+## Architecture
+This is a Python CLI tool that learns an author's editing style from markdown diffs.
+Stage 1 only - learning pipeline. No apply edits functionality.
+
+### Data Flow
+1. differ.py - paragraph-level diffing via difflib.SequenceMatcher
+2. analyzer.py - sends diffs to Claude API for categorization (JSON-only responses)
+3. profile.py - merges patterns into output/style_profile.json with occurrence counting
+4. cli.py - Click CLI with learn, profile, reset commands
+
+### Conventions
+- Model: claude-sonnet-4-20250514 via anthropic SDK
+- API key from .env via python-dotenv
+- All Claude responses must be raw JSON no markdown fences
+- Profile accumulates across chapters; matching rules increment occurrence count
