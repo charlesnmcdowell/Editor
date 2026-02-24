@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.1] - 2026-02-24
+
+### Edit Session — Chapter 5 (Human Feedback Mode)
+
+First live run of the Stage 2 editing pipeline.
+
+- **Input:** Chapter 5 ("The Throat of It") — 30,461 chars original + 31,639 chars of inline human feedback
+- **Output:** `final.md` (29,834 chars) — clean edited chapter with all feedback applied
+- **Reasoning:** `aiedited.md` (2,196 chars) — AI's change log explaining each edit
+- **Preferences extracted:** First `authorpreferences.md` (2,899 chars) built from human feedback patterns:
+  - Avoid "not X but Y" prose constructions — keep descriptions simple and direct
+  - Never use "gamer," "gamer brain," or "gamer instincts" — breaks immersion
+  - Reduce overuse of "lattice" — vary terminology for the corruption network
+  - Avoid redundant references to "Kenji's brain" — find other ways to frame his tactical thinking
+  - Simplify negative-contrast constructions (e.g., "These aren't prisoners. They're hardware." → direct statement)
+  - Kenji is the fighter/tank; Lyra notices environmental details via druid powers
+- **Archived to:** `history/2026-02-24_103036_human/`
+- **Fixed:** UTF-8 BOM handling in `.env` and working files (PowerShell `Set-Content` adds BOM by default)
+
+---
+
 ## [0.2.0] - 2026-02-23
 
 ### Changed — Stage 2: File-Based Editing Workflow
